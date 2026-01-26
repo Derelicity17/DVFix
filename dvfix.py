@@ -223,6 +223,28 @@ def ensure_no_dv_suffix(path):
     return f"{base}.noDV"
 
 
+def is_no_dv_name(path):
+    base = os.path.basename(path)
+    root, _ext = os.path.splitext(base)
+    return root.endswith(".noDV")
+
+
+def resolve_output_path(input_path, output_arg):
+    if output_arg:
+        desired_name = ensure_no_dv_suffix(output_arg)
+        output_path = os.path.join(
+            os.path.dirname(os.path.abspath(input_path)), desired_name
+        )
+    else:
+        output_path = default_output_path(input_path)
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    input_dir = os.path.dirname(os.path.abspath(input_path))
+    if output_dir != input_dir:
+        output_path = os.path.join(input_dir, os.path.basename(output_path))
+        print(f"Output directory forced to input directory: {output_path}")
+    return output_path
+
+
 def format_stream_info(video_stream):
     codec = video_stream.get("codec_name") or "unknown"
     width = video_stream.get("width")
@@ -279,135 +301,87 @@ def build_sample_segments(total_duration, count, seg_len, seed=None):
     return starts
 
 
-def confirm_reencode(output_path, assume_yes):
-    if assume_yes:
-        return True
-    print("")
-    print("Profile 5 detected. This requires re-encoding the video to HDR10.")
-    print("Re-encoding means the video stream will be recompressed, which can change")
-    print("quality and will take time. Audio, subtitles, chapters, and metadata stay")
-    print("bit-for-bit the same.")
-    print("")
-    resp = input(f"Proceed with re-encoding to {output_path}? [y/N]: ").strip().lower()
-    return resp in ("y", "yes")
+def collect_input_files(path):
+    video_exts = {
+        ".mkv",
+        ".mp4",
+        ".mov",
+        ".m4v",
+        ".ts",
+        ".m2ts",
+        ".avi",
+        ".wmv",
+        ".mxf",
+        ".webm",
+    }
+    if os.path.isdir(path):
+        files = []
+        for root, _dirs, names in os.walk(path):
+            for name in names:
+                ext = os.path.splitext(name)[1].lower()
+                if ext in video_exts:
+                    files.append(os.path.join(root, name))
+        return files
+    return [path]
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Convert Dolby Vision to HDR10 while preserving all non-video streams."
-    )
-    parser.add_argument("input", help="Input video file (MKV/MP4/…)")
-    parser.add_argument("output", nargs="?", help="Output file (default: input.noDV.ext)")
-    parser.add_argument(
-        "--encoder",
-        default="hevc_nvenc",
-        help="Video encoder to use if re-encoding is required (default: hevc_nvenc)",
-    )
-    parser.add_argument(
-        "--preset",
-        default="p7",
-        help="Encoder preset to use when re-encoding (default: p7)",
-    )
-    parser.add_argument(
-        "--cq",
-        default="19",
-        help="Constant quality for NVENC VBR (default: 19)",
-    )
-    parser.add_argument(
-        "--p5-force-tag",
-        action="store_true",
-        help="For Profile 5, skip DV processing and only tag HDR10 (colors likely wrong)",
-    )
-    parser.add_argument(
-        "--sample",
-        type=float,
-        default=None,
-        help="Encode only the first N seconds (quick test output)",
-    )
-    parser.add_argument(
-        "--sample-rand",
-        type=int,
-        default=None,
-        help="Create a test clip from N random segments (requires re-encode)",
-    )
-    parser.add_argument(
-        "--sample-seg-len",
-        type=float,
-        default=2.0,
-        help="Length in seconds for each random segment (default: 2)",
-    )
-    parser.add_argument(
-        "--sample-seed",
-        type=int,
-        default=None,
-        help="Seed for random segment selection (repeatable samples)",
-    )
-    parser.add_argument(
-        "--temp",
-        default=None,
-        help="Temporary directory (defaults to OS temp)",
-    )
-    parser.add_argument(
-        "--keep-temp",
-        action="store_true",
-        help="Keep temporary files (debug)",
-    )
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="Assume yes for prompts (Profile 5 re-encode)",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite output if it already exists",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print commands without running them",
-    )
-    args = parser.parse_args()
+def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
+    if not os.path.exists(input_path):
+        print(f"Skipping missing file: {input_path}")
+        return "skipped"
+    if is_no_dv_name(input_path):
+        print(f"Skipping already-processed file: {input_path}")
+        return "skipped"
 
-    ffmpeg = which_or_die("ffmpeg")
-    ffprobe = which_or_die("ffprobe")
-
-    if not os.path.exists(args.input):
-        raise SystemExit(f"Input file not found: {args.input}")
-
-    if args.output:
-        desired_name = ensure_no_dv_suffix(args.output)
-        output_path = os.path.join(
-            os.path.dirname(os.path.abspath(args.input)), desired_name
-        )
-    else:
-        output_path = default_output_path(args.input)
-    output_dir = os.path.dirname(os.path.abspath(output_path))
-    input_dir = os.path.dirname(os.path.abspath(args.input))
-    if output_dir != input_dir:
-        output_path = os.path.join(input_dir, os.path.basename(output_path))
-        print(f"Output directory forced to input directory: {output_path}")
+    output_path = resolve_output_path(input_path, output_arg)
     if os.path.exists(output_path) and not args.overwrite:
-        raise SystemExit(
-            f"Output already exists: {output_path} (use --overwrite to replace)"
-        )
+        print(f"Skipping existing output: {output_path} (use --overwrite to replace)")
+        return "skipped"
 
-    data = ffprobe_json(ffprobe, args.input)
-    video = pick_video_stream(data)
+    try:
+        data = ffprobe_json(ffprobe, input_path)
+    except SystemExit:
+        print(f"Skipping non-media file: {input_path}")
+        return "skipped"
+
+    try:
+        video = pick_video_stream(data)
+    except SystemExit as exc:
+        print(f"Skipping: {exc}")
+        return "skipped"
 
     if video.get("codec_name") != "hevc":
-        raise SystemExit("Input video is not HEVC. Dolby Vision HEVC is required.")
+        print("Skipping: input video is not HEVC.")
+        print(f"  File: {input_path}")
+        return "skipped"
 
     dv_profile = get_dv_profile(video)
-    print_detection(args.input, data, video, dv_profile)
+    print_detection(input_path, data, video, dv_profile)
+    print(f"  Output: {output_path}")
+
     if dv_profile is None:
-        raise SystemExit("No Dolby Vision metadata found (DOVI configuration record).")
+        print("  Action: skip (no Dolby Vision metadata)")
+        return "skipped"
 
     if args.sample is not None and args.sample_rand is not None:
-        raise SystemExit("Use only one of --sample or --sample-rand.")
+        print("  Action: skip (invalid sample options)")
+        return "skipped"
+
+    def finalize_success():
+        if args.replace:
+            try:
+                os.remove(input_path)
+                print(f"Removed original: {input_path}")
+            except OSError as exc:
+                print(f"Warning: failed to remove original ({exc})")
+        return "converted"
 
     # Profile 7: BL + EL (+ RPU). We must remove EL + RPU to get HDR10 base.
     if dv_profile == 7:
+        if args.sample is not None or args.sample_rand is not None:
+            print("  Action: skip (sample mode only supports Profile 5)")
+            return "skipped"
+        print("  Action: convert Profile 7 (strip EL/RPU)")
         dovi_tool = which_or_die("dovi_tool")
         temp_root = args.temp or tempfile.gettempdir()
         temp_dir = tempfile.mkdtemp(prefix="dvfix_", dir=temp_root)
@@ -419,7 +393,7 @@ def main():
                 ffmpeg,
                 "-y",
                 "-i",
-                args.input,
+                input_path,
                 "-map",
                 "0:v:0",
                 "-c:v",
@@ -431,11 +405,11 @@ def main():
                 in_hevc,
             ]
             if run(cmd1, args.dry_run) != 0:
-                raise SystemExit(1)
+                return "failed"
 
             cmd2 = [dovi_tool, "remove", in_hevc, "-o", bl_hevc]
             if run(cmd2, args.dry_run) != 0:
-                raise SystemExit(1)
+                return "failed"
 
             cmd3 = [
                 ffmpeg,
@@ -443,7 +417,7 @@ def main():
                 "-i",
                 bl_hevc,
                 "-i",
-                args.input,
+                input_path,
                 "-map",
                 "1",
                 "-map",
@@ -459,19 +433,23 @@ def main():
                 output_path,
             ]
             if run(cmd3, args.dry_run) != 0:
-                raise SystemExit(1)
+                return "failed"
         finally:
             if not args.keep_temp:
                 shutil.rmtree(temp_dir, ignore_errors=True)
-        return
+        return finalize_success()
 
     # Profile 8 (HDR10 base + DV metadata): strip DV metadata without re-encode.
     if dv_profile == 8:
+        if args.sample is not None or args.sample_rand is not None:
+            print("  Action: skip (sample mode only supports Profile 5)")
+            return "skipped"
+        print("  Action: convert Profile 8 (strip RPU)")
         cmd = [
             ffmpeg,
             "-y",
             "-i",
-            args.input,
+            input_path,
             "-map",
             "0",
             "-c",
@@ -485,13 +463,15 @@ def main():
             output_path,
         ]
         if run(cmd, args.dry_run) != 0:
-            raise SystemExit(1)
-        return
+            return "failed"
+        return finalize_success()
 
     # Profile 5 (single-layer DV): requires re-encode.
     if dv_profile == 5:
+        print("  Action: convert Profile 5 (re-encode)")
         if not confirm_reencode(output_path, args.yes):
-            raise SystemExit("Cancelled by user.")
+            print("  Action: cancelled by user")
+            return "skipped"
 
         color_tags = get_color_tags(video)
         color_args = build_hdr10_color_args(color_tags)
@@ -504,11 +484,12 @@ def main():
                     "proceeding with tag-only output (colors likely wrong)."
                 )
             else:
-                raise SystemExit(
+                print(
                     "Profile 5 requires ffmpeg with libplacebo to apply Dolby Vision metadata. "
                     "Install a libplacebo-enabled ffmpeg build or rerun with --p5-force-tag to "
                     "continue with likely-wrong colors."
                 )
+                return "failed"
         else:
             ok, reason = ffmpeg_libplacebo_usable(ffmpeg)
             if not ok:
@@ -518,10 +499,11 @@ def main():
                         "Proceeding with tag-only output (colors likely wrong)."
                     )
                 else:
-                    raise SystemExit(
+                    print(
                         f"Profile 5: {reason} "
                         "Install a Vulkan-enabled FFmpeg build or use --p5-force-tag."
                     )
+                    return "failed"
             if not has_vulkan_loader():
                 if args.p5_force_tag:
                     print(
@@ -529,12 +511,13 @@ def main():
                         "proceeding with tag-only output (colors likely wrong)."
                     )
                 else:
-                    raise SystemExit(
+                    print(
                         "Profile 5 requires Vulkan (vulkan-1.dll) for libplacebo. "
                         "Install/repair your NVIDIA drivers or Vulkan runtime, or place "
                         "vulkan-1.dll next to ffmpeg.exe, then retry. "
                         "Use --p5-force-tag to continue with likely-wrong colors."
                     )
+                    return "failed"
             range_tag = color_tags.get("color_range")
             if range_tag == "pc":
                 range_out = "full"
@@ -550,7 +533,7 @@ def main():
         sample_rand = args.sample_rand
 
         if sample_duration is not None or sample_rand is not None:
-            print("Sample mode enabled: output will include only a subset of the video.")
+            print("  Sample mode enabled: output will include only a subset of the video.")
             has_audio = has_audio_stream(data)
             if sample_duration is not None:
                 cmd = [
@@ -561,7 +544,7 @@ def main():
                     "-t",
                     str(sample_duration),
                     "-i",
-                    args.input,
+                    input_path,
                     "-map",
                     "0:v:0",
                 ]
@@ -633,7 +616,7 @@ def main():
                     ffmpeg,
                     "-y",
                     "-i",
-                    args.input,
+                    input_path,
                     "-filter_complex",
                     ";".join(filters),
                     "-map",
@@ -664,7 +647,7 @@ def main():
                 ffmpeg,
                 "-y",
                 "-i",
-                args.input,
+                input_path,
                 "-map",
                 "0:v:0",
                 "-map",
@@ -709,13 +692,138 @@ def main():
             ]
 
         if run(cmd, args.dry_run) != 0:
-            raise SystemExit(1)
-        return
+            return "failed"
+        return finalize_success()
 
+    print(f"  Action: skip (unsupported Dolby Vision profile: {dv_profile})")
+    return "skipped"
+
+
+def confirm_reencode(output_path, assume_yes):
+    if assume_yes:
+        return True
+    print("")
+    print("Profile 5 detected. This requires re-encoding the video to HDR10.")
+    print("Re-encoding means the video stream will be recompressed, which can change")
+    print("quality and will take time. Audio, subtitles, chapters, and metadata stay")
+    print("bit-for-bit the same.")
+    print("")
+    resp = input(f"Proceed with re-encoding to {output_path}? [y/N]: ").strip().lower()
+    return resp in ("y", "yes")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Convert Dolby Vision to HDR10 while preserving all non-video streams."
+    )
+    parser.add_argument("input", help="Input file or directory (MKV/MP4/…)")
+    parser.add_argument("output", nargs="?", help="Output file (file input only)")
+    parser.add_argument(
+        "--encoder",
+        default="hevc_nvenc",
+        help="Video encoder to use if re-encoding is required (default: hevc_nvenc)",
+    )
+    parser.add_argument(
+        "--preset",
+        default="p7",
+        help="Encoder preset to use when re-encoding (default: p7)",
+    )
+    parser.add_argument(
+        "--cq",
+        default="19",
+        help="Constant quality for NVENC VBR (default: 19)",
+    )
+    parser.add_argument(
+        "--p5-force-tag",
+        action="store_true",
+        help="For Profile 5, skip DV processing and only tag HDR10 (colors likely wrong)",
+    )
+    parser.add_argument(
+        "--sample",
+        type=float,
+        default=None,
+        help="Encode only the first N seconds (quick test output)",
+    )
+    parser.add_argument(
+        "--sample-rand",
+        type=int,
+        default=None,
+        help="Create a test clip from N random segments (requires re-encode)",
+    )
+    parser.add_argument(
+        "--sample-seg-len",
+        type=float,
+        default=2.0,
+        help="Length in seconds for each random segment (default: 2)",
+    )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=None,
+        help="Seed for random segment selection (repeatable samples)",
+    )
+    parser.add_argument(
+        "--temp",
+        default=None,
+        help="Temporary directory (defaults to OS temp)",
+    )
+    parser.add_argument(
+        "--keep-temp",
+        action="store_true",
+        help="Keep temporary files (debug)",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Assume yes for prompts (Profile 5 re-encode)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite output if it already exists",
+    )
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Delete original file after successful conversion",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print commands without running them",
+    )
+    args = parser.parse_args()
+
+    ffmpeg = which_or_die("ffmpeg")
+    ffprobe = which_or_die("ffprobe")
+
+    if args.sample is not None and args.sample_rand is not None:
+        raise SystemExit("Use only one of --sample or --sample-rand.")
     if args.sample is not None or args.sample_rand is not None:
-        raise SystemExit("Sample mode is currently supported only for Profile 5.")
+        if args.replace:
+            print("WARNING: --replace is ignored in sample mode.")
+            args.replace = False
 
-    raise SystemExit(f"Unsupported Dolby Vision profile: {dv_profile}")
+    if args.replace:
+        print("WARNING: --replace will delete original files after successful conversion.")
+
+    inputs = collect_input_files(args.input)
+    if not inputs:
+        raise SystemExit(f"No candidate video files found in: {args.input}")
+
+    if os.path.isdir(args.input) and args.output:
+        print("Note: output argument is ignored when input is a directory.")
+
+    results = {"converted": 0, "skipped": 0, "failed": 0}
+    for path in inputs:
+        status = process_file(path, args.output if not os.path.isdir(args.input) else None, args, ffmpeg, ffprobe)
+        results[status] += 1
+
+    print("")
+    print("Summary:")
+    print(f"  Converted: {results['converted']}")
+    print(f"  Skipped:   {results['skipped']}")
+    print(f"  Failed:    {results['failed']}")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,12 @@ By default, output is written next to the input with `.noDV` added:
 
 If you provide an output name, `.noDV` will be appended if missing and it will still be written to the input directory.
 
+You can also pass a directory to scan for video files (recursively):
+
+```powershell
+.\dvfix.ps1 "D:\Videos"
+```
+
 ## FFmpeg builds (Profile 5)
 
 Profile 5 requires a Vulkan-enabled `libplacebo` build of FFmpeg. DVFix prefers the
@@ -50,6 +56,7 @@ Vulkan loader. Replace `ffmpeg.exe`/`ffprobe.exe` with a Vulkan-enabled build an
 - `--sample-rand N` Create a test clip from N random segments (requires re-encode).
 - `--sample-seg-len N` Segment length for `--sample-rand` (default: 2 seconds).
 - `--sample-seed N` Seed for random sampling (repeatable output).
+- `--replace` Delete original file after successful conversion (prints a warning).
 - `--temp` Custom temp directory.
 - `--keep-temp` Keep temp files for debugging.
 - `--yes` Skip the Profile 5 confirmation prompt.
