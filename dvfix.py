@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import ctypes
 
 
 def eprint(msg):
@@ -56,6 +57,24 @@ def ffmpeg_has_filter(ffmpeg, name):
         return False
     token = f" {name} "
     return token in out
+
+
+def has_vulkan_loader():
+    if os.name == "nt":
+        dll_name = "vulkan-1.dll"
+        try:
+            ctypes.WinDLL(dll_name)
+            return True
+        except OSError:
+            return False
+    # Best-effort for non-Windows
+    for lib in ("libvulkan.so.1", "libvulkan.so"):
+        try:
+            ctypes.CDLL(lib)
+            return True
+        except OSError:
+            continue
+    return False
 
 
 def ffprobe_json(ffprobe, input_path):
@@ -455,6 +474,19 @@ def main():
                     "continue with likely-wrong colors."
                 )
         else:
+            if not has_vulkan_loader():
+                if args.p5_force_tag:
+                    print(
+                        "Profile 5: Vulkan loader not found; "
+                        "proceeding with tag-only output (colors likely wrong)."
+                    )
+                else:
+                    raise SystemExit(
+                        "Profile 5 requires Vulkan (vulkan-1.dll) for libplacebo. "
+                        "Install/repair your NVIDIA drivers or Vulkan runtime, or place "
+                        "vulkan-1.dll next to ffmpeg.exe, then retry. "
+                        "Use --p5-force-tag to continue with likely-wrong colors."
+                    )
             range_tag = color_tags.get("color_range")
             if range_tag == "pc":
                 range_out = "full"

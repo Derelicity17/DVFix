@@ -48,4 +48,5 @@ If you provide an output name, `.noDV` will be appended if missing and it will s
 - For Profile 8, the FFmpeg build must include the `dovi_rpu` bitstream filter.
 - For Profile 5, the video must be re-encoded; this is unavoidable because there is no HDR10 base layer.
 - For Profile 5, an FFmpeg build with `libplacebo` is required to apply Dolby Vision metadata.
+- For Profile 5 on Windows, Vulkan runtime (`vulkan-1.dll`) must be available (usually installed with NVIDIA drivers).
 - Sample mode is currently supported only for Profile 5.
