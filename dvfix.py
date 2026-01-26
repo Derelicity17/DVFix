@@ -59,6 +59,42 @@ def ffmpeg_has_filter(ffmpeg, name):
     return token in out
 
 
+def ffmpeg_libplacebo_usable(ffmpeg):
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=16x16:d=0.1",
+        "-vf",
+        "libplacebo",
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode == 0:
+        return True, None
+    out = (proc.stderr or "") + (proc.stdout or "")
+    if "vkGetInstanceProcAddr" in out:
+        return (
+            False,
+            "libplacebo exists but FFmpeg is not linked against the Vulkan loader "
+            "(vkGetInstanceProcAddr). Use a Vulkan-enabled FFmpeg build.",
+        )
+    if "Failed creating Vulkan device" in out or "Failed initializing vulkan device" in out:
+        return (
+            False,
+            "Vulkan device initialization failed. Update GPU drivers or Vulkan runtime.",
+        )
+    return False, "libplacebo filter failed to initialize."
+
+
 def has_vulkan_loader():
     if os.name == "nt":
         dll_name = "vulkan-1.dll"
@@ -474,6 +510,18 @@ def main():
                     "continue with likely-wrong colors."
                 )
         else:
+            ok, reason = ffmpeg_libplacebo_usable(ffmpeg)
+            if not ok:
+                if args.p5_force_tag:
+                    print(
+                        f"Profile 5: {reason} "
+                        "Proceeding with tag-only output (colors likely wrong)."
+                    )
+                else:
+                    raise SystemExit(
+                        f"Profile 5: {reason} "
+                        "Install a Vulkan-enabled FFmpeg build or use --p5-force-tag."
+                    )
             if not has_vulkan_loader():
                 if args.p5_force_tag:
                     print(
