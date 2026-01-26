@@ -19,6 +19,21 @@ By default, output is written next to the input with `.noDV` added:
 
 If you provide an output name, `.noDV` will be appended if missing and it will still be written to the input directory.
 
+## FFmpeg builds (Profile 5)
+
+Profile 5 requires a Vulkan-enabled `libplacebo` build of FFmpeg. DVFix prefers the
+working directory first, so you can drop `ffmpeg.exe` and `ffprobe.exe` next to
+`dvfix.py` to override PATH.
+
+Quick check:
+
+```powershell
+ffmpeg -hide_banner -f lavfi -i color=c=black:s=16x16:d=0.1 -vf libplacebo -frames:v 1 -f null -
+```
+
+If you see `vkGetInstanceProcAddr` errors, your FFmpeg build isn't linked against the
+Vulkan loader. Replace `ffmpeg.exe`/`ffprobe.exe` with a Vulkan-enabled build and retry.
+
 ## What it does
 
 - **Profile 7**: Extracts the HEVC bitstream, removes EL + RPU via `dovi_tool`, remuxes the HDR10 base layer, and copies all other streams unchanged.
