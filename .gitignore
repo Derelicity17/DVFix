@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+*.lnk
+ffmpeg.exe
+ffprobe.exe
+ffplay.exe
+dovi_tool.exe
