@@ -30,7 +30,7 @@ If you provide an output name, `.noDV` will be appended if missing and it will s
 - `--encoder` Video encoder for re-encode (default: `hevc_nvenc`).
 - `--preset` Encoder preset for re-encode (default: `p7`).
 - `--cq` NVENC constant-quality value (default: `19`).
-- `--p5-convert` For Profile 5, apply zscale colorspace conversion (default: tag-only).
+- `--p5-force-tag` For Profile 5, skip DV processing and only tag HDR10 (colors likely wrong).
 - `--temp` Custom temp directory.
 - `--keep-temp` Keep temp files for debugging.
 - `--yes` Skip the Profile 5 confirmation prompt.
@@ -43,3 +43,4 @@ If you provide an output name, `.noDV` will be appended if missing and it will s
 - Only single-video-stream inputs are supported.
 - For Profile 8, the FFmpeg build must include the `dovi_rpu` bitstream filter.
 - For Profile 5, the video must be re-encoded; this is unavoidable because there is no HDR10 base layer.
+- For Profile 5, an FFmpeg build with `libplacebo` is required to apply Dolby Vision metadata.

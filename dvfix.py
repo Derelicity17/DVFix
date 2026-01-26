@@ -46,6 +46,17 @@ def run(cmd, dry_run=False):
     return proc.returncode
 
 
+def ffmpeg_has_filter(ffmpeg, name):
+    try:
+        out = subprocess.check_output(
+            [ffmpeg, "-hide_banner", "-filters"], stderr=subprocess.STDOUT
+        ).decode("utf-8", errors="ignore")
+    except subprocess.CalledProcessError:
+        return False
+    token = f" {name} "
+    return token in out
+
+
 def ffprobe_json(ffprobe, input_path):
     cmd = [
         ffprobe,
@@ -222,9 +233,9 @@ def main():
         help="Constant quality for NVENC VBR (default: 19)",
     )
     parser.add_argument(
-        "--p5-convert",
+        "--p5-force-tag",
         action="store_true",
-        help="For Profile 5, apply zscale colorspace conversion (default: tag-only)",
+        help="For Profile 5, skip DV processing and only tag HDR10 (colors likely wrong)",
     )
     parser.add_argument(
         "--temp",
@@ -377,18 +388,29 @@ def main():
         color_tags = get_color_tags(video)
         color_args = build_hdr10_color_args(color_tags)
         vf = None
-        if args.p5_convert:
-            if has_complete_color_tags(color_tags):
-                vf = "zscale=primaries=bt2020:transfer=smpte2084:matrix=bt2020nc"
+        has_libplacebo = ffmpeg_has_filter(ffmpeg, "libplacebo")
+        if not has_libplacebo:
+            if args.p5_force_tag:
+                print(
+                    "Profile 5: libplacebo filter not available; "
+                    "proceeding with tag-only output (colors likely wrong)."
+                )
             else:
-                vf = (
-                    "zscale=primaries=bt2020:transfer=smpte2084:matrix=bt2020nc:"
-                    "primariesin=bt2020:transferin=smpte2084:matrixin=bt2020nc"
+                raise SystemExit(
+                    "Profile 5 requires ffmpeg with libplacebo to apply Dolby Vision metadata. "
+                    "Install a libplacebo-enabled ffmpeg build or rerun with --p5-force-tag to "
+                    "continue with likely-wrong colors."
                 )
         else:
-            print(
-                "Profile 5: re-encoding without colorspace conversion; "
-                "tagging output as HDR10 (BT.2020/PQ). Use --p5-convert to force zscale."
+            range_tag = color_tags.get("color_range")
+            if range_tag == "pc":
+                range_out = "full"
+            else:
+                range_out = "limited"
+            vf = (
+                "libplacebo=apply_dolbyvision=1"
+                f":colorspace=bt2020nc:color_primaries=bt2020"
+                f":color_trc=smpte2084:range={range_out}"
             )
 
         cmd = [
