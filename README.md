@@ -58,6 +58,7 @@ Vulkan loader. Replace `ffmpeg.exe`/`ffprobe.exe` with a Vulkan-enabled build an
 
 ## Notes
 
+- This repo is code-only and does not include third-party binaries.
 - The tool preserves audio, subtitles, attachments, chapters, and container metadata.
 - Only single-video-stream inputs are supported.
 - For Profile 8, the FFmpeg build must include the `dovi_rpu` bitstream filter.

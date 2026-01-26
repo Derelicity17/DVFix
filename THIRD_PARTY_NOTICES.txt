@@ -1,0 +1,9 @@
+This project is code-only and does not ship third-party binaries.
+
+DVFix can invoke external tools that you install separately. Those tools are
+licensed by their respective authors. Check their licenses before
+redistributing any binaries.
+
+- FFmpeg (LGPL/GPL depending on build) - https://ffmpeg.org/legal.html
+- dovi_tool (MIT) - https://github.com/quietvoid/dovi_tool
+- libplacebo (LGPL-2.1+) - https://github.com/haasn/libplacebo
