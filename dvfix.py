@@ -476,48 +476,34 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
         color_tags = get_color_tags(video)
         color_args = build_hdr10_color_args(color_tags)
         vf = None
-        has_libplacebo = ffmpeg_has_filter(ffmpeg, "libplacebo")
-        if not has_libplacebo:
-            if args.p5_force_tag:
-                print(
-                    "Profile 5: libplacebo filter not available; "
-                    "proceeding with tag-only output (colors likely wrong)."
-                )
-            else:
+        if args.p5_force_tag:
+            print(
+                "Profile 5: forcing tag-only output (DV processing skipped; colors may be wrong)."
+            )
+        else:
+            has_libplacebo = ffmpeg_has_filter(ffmpeg, "libplacebo")
+            if not has_libplacebo:
                 print(
                     "Profile 5 requires ffmpeg with libplacebo to apply Dolby Vision metadata. "
                     "Install a libplacebo-enabled ffmpeg build or rerun with --p5-force-tag to "
                     "continue with likely-wrong colors."
                 )
                 return "failed"
-        else:
             ok, reason = ffmpeg_libplacebo_usable(ffmpeg)
             if not ok:
-                if args.p5_force_tag:
-                    print(
-                        f"Profile 5: {reason} "
-                        "Proceeding with tag-only output (colors likely wrong)."
-                    )
-                else:
-                    print(
-                        f"Profile 5: {reason} "
-                        "Install a Vulkan-enabled FFmpeg build or use --p5-force-tag."
-                    )
-                    return "failed"
+                print(
+                    f"Profile 5: {reason} "
+                    "Install a Vulkan-enabled FFmpeg build or use --p5-force-tag."
+                )
+                return "failed"
             if not has_vulkan_loader():
-                if args.p5_force_tag:
-                    print(
-                        "Profile 5: Vulkan loader not found; "
-                        "proceeding with tag-only output (colors likely wrong)."
-                    )
-                else:
-                    print(
-                        "Profile 5 requires Vulkan (vulkan-1.dll) for libplacebo. "
-                        "Install/repair your NVIDIA drivers or Vulkan runtime, or place "
-                        "vulkan-1.dll next to ffmpeg.exe, then retry. "
-                        "Use --p5-force-tag to continue with likely-wrong colors."
-                    )
-                    return "failed"
+                print(
+                    "Profile 5 requires Vulkan (vulkan-1.dll) for libplacebo. "
+                    "Install/repair your NVIDIA drivers or Vulkan runtime, or place "
+                    "vulkan-1.dll next to ffmpeg.exe, then retry. "
+                    "Use --p5-force-tag to continue with likely-wrong colors."
+                )
+                return "failed"
             range_tag = color_tags.get("color_range")
             if range_tag == "pc":
                 range_out = "full"
@@ -712,6 +698,15 @@ def confirm_reencode(output_path, assume_yes):
     return resp in ("y", "yes")
 
 
+def confirm_replace_all(assume_yes):
+    if assume_yes:
+        return True
+    print("")
+    print("WARNING: --replace will delete original files after successful conversion.")
+    resp = input("Proceed with --replace? [y/N]: ").strip().lower()
+    return resp in ("y", "yes")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert Dolby Vision to HDR10 while preserving all non-video streams."
@@ -804,8 +799,8 @@ def main():
             print("WARNING: --replace is ignored in sample mode.")
             args.replace = False
 
-    if args.replace:
-        print("WARNING: --replace will delete original files after successful conversion.")
+    if args.replace and not confirm_replace_all(args.yes):
+        raise SystemExit("Cancelled by user.")
 
     inputs = collect_input_files(args.input)
     if not inputs:

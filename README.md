@@ -56,7 +56,7 @@ Vulkan loader. Replace `ffmpeg.exe`/`ffprobe.exe` with a Vulkan-enabled build an
 - `--sample-rand N` Create a test clip from N random segments (requires re-encode).
 - `--sample-seg-len N` Segment length for `--sample-rand` (default: 2 seconds).
 - `--sample-seed N` Seed for random sampling (repeatable output).
-- `--replace` Delete original file after successful conversion (prints a warning).
+- `--replace` Delete original file after successful conversion (requires confirmation or `--yes`).
 - `--temp` Custom temp directory.
 - `--keep-temp` Keep temp files for debugging.
 - `--yes` Skip the Profile 5 confirmation prompt.
