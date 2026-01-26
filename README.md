@@ -30,6 +30,7 @@ If you provide an output name, `.noDV` will be appended if missing and it will s
 - `--encoder` Video encoder for re-encode (default: `hevc_nvenc`).
 - `--preset` Encoder preset for re-encode (default: `p7`).
 - `--cq` NVENC constant-quality value (default: `19`).
+- `--p5-convert` For Profile 5, apply zscale colorspace conversion (default: tag-only).
 - `--temp` Custom temp directory.
 - `--keep-temp` Keep temp files for debugging.
 - `--yes` Skip the Profile 5 confirmation prompt.

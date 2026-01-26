@@ -109,6 +109,28 @@ def build_color_args(tags):
     return args
 
 
+def build_hdr10_color_args(tags):
+    args = [
+        "-color_primaries",
+        "bt2020",
+        "-color_trc",
+        "smpte2084",
+        "-colorspace",
+        "bt2020nc",
+    ]
+    if tags.get("color_range"):
+        args += ["-color_range", tags["color_range"]]
+    return args
+
+
+def has_complete_color_tags(tags):
+    return bool(
+        tags.get("color_primaries")
+        and tags.get("color_trc")
+        and tags.get("colorspace")
+    )
+
+
 def default_output_path(input_path):
     in_dir = os.path.dirname(os.path.abspath(input_path))
     base = os.path.basename(input_path)
@@ -198,6 +220,11 @@ def main():
         "--cq",
         default="19",
         help="Constant quality for NVENC VBR (default: 19)",
+    )
+    parser.add_argument(
+        "--p5-convert",
+        action="store_true",
+        help="For Profile 5, apply zscale colorspace conversion (default: tag-only)",
     )
     parser.add_argument(
         "--temp",
@@ -348,9 +375,21 @@ def main():
             raise SystemExit("Cancelled by user.")
 
         color_tags = get_color_tags(video)
-        color_args = build_color_args(color_tags)
-
-        vf = "zscale=primaries=bt2020:transfer=smpte2084:matrix=bt2020nc"
+        color_args = build_hdr10_color_args(color_tags)
+        vf = None
+        if args.p5_convert:
+            if has_complete_color_tags(color_tags):
+                vf = "zscale=primaries=bt2020:transfer=smpte2084:matrix=bt2020nc"
+            else:
+                vf = (
+                    "zscale=primaries=bt2020:transfer=smpte2084:matrix=bt2020nc:"
+                    "primariesin=bt2020:transferin=smpte2084:matrixin=bt2020nc"
+                )
+        else:
+            print(
+                "Profile 5: re-encoding without colorspace conversion; "
+                "tagging output as HDR10 (BT.2020/PQ). Use --p5-convert to force zscale."
+            )
 
         cmd = [
             ffmpeg,
@@ -381,8 +420,6 @@ def main():
             str(args.cq),
             "-b:v",
             "0",
-            "-vf",
-            vf,
             "-c:a",
             "copy",
             "-c:s",
@@ -395,7 +432,10 @@ def main():
             "0",
             "-map_chapters",
             "0",
-        ] + color_args + [
+        ]
+        if vf:
+            cmd += ["-vf", vf]
+        cmd += color_args + [
             output_path,
         ]
 
