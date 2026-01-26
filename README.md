@@ -31,6 +31,10 @@ If you provide an output name, `.noDV` will be appended if missing and it will s
 - `--preset` Encoder preset for re-encode (default: `p7`).
 - `--cq` NVENC constant-quality value (default: `19`).
 - `--p5-force-tag` For Profile 5, skip DV processing and only tag HDR10 (colors likely wrong).
+- `--sample N` Encode only the first N seconds (quick test output).
+- `--sample-rand N` Create a test clip from N random segments (requires re-encode).
+- `--sample-seg-len N` Segment length for `--sample-rand` (default: 2 seconds).
+- `--sample-seed N` Seed for random sampling (repeatable output).
 - `--temp` Custom temp directory.
 - `--keep-temp` Keep temp files for debugging.
 - `--yes` Skip the Profile 5 confirmation prompt.
@@ -44,3 +48,4 @@ If you provide an output name, `.noDV` will be appended if missing and it will s
 - For Profile 8, the FFmpeg build must include the `dovi_rpu` bitstream filter.
 - For Profile 5, the video must be re-encoded; this is unavoidable because there is no HDR10 base layer.
 - For Profile 5, an FFmpeg build with `libplacebo` is required to apply Dolby Vision metadata.
+- Sample mode is currently supported only for Profile 5.

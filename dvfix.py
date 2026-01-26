@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -86,6 +87,10 @@ def pick_video_stream(data):
             "Multiple video streams found. This tool currently supports only one."
         )
     return videos[0]
+
+
+def has_audio_stream(data):
+    return any(s.get("codec_type") == "audio" for s in data.get("streams", []))
 
 
 def get_dv_profile(video_stream):
@@ -198,6 +203,27 @@ def print_detection(input_path, data, video_stream, dv_profile):
         print(f"  Dolby Vision: profile {dv_profile}")
 
 
+def parse_duration_seconds(data):
+    fmt = data.get("format", {})
+    try:
+        return float(fmt.get("duration"))
+    except (TypeError, ValueError):
+        return None
+
+
+def build_sample_segments(total_duration, count, seg_len, seed=None):
+    if total_duration is None:
+        raise SystemExit("Cannot determine duration; sample-rand requires duration.")
+    if total_duration <= seg_len:
+        raise SystemExit("Duration too short for requested sample segment length.")
+    rng = random.Random(seed)
+    starts = []
+    max_start = max(0.0, total_duration - seg_len)
+    for _ in range(count):
+        starts.append(rng.uniform(0.0, max_start))
+    return starts
+
+
 def confirm_reencode(output_path, assume_yes):
     if assume_yes:
         return True
@@ -236,6 +262,30 @@ def main():
         "--p5-force-tag",
         action="store_true",
         help="For Profile 5, skip DV processing and only tag HDR10 (colors likely wrong)",
+    )
+    parser.add_argument(
+        "--sample",
+        type=float,
+        default=None,
+        help="Encode only the first N seconds (quick test output)",
+    )
+    parser.add_argument(
+        "--sample-rand",
+        type=int,
+        default=None,
+        help="Create a test clip from N random segments (requires re-encode)",
+    )
+    parser.add_argument(
+        "--sample-seg-len",
+        type=float,
+        default=2.0,
+        help="Length in seconds for each random segment (default: 2)",
+    )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=None,
+        help="Seed for random segment selection (repeatable samples)",
     )
     parser.add_argument(
         "--temp",
@@ -297,6 +347,9 @@ def main():
     print_detection(args.input, data, video, dv_profile)
     if dv_profile is None:
         raise SystemExit("No Dolby Vision metadata found (DOVI configuration record).")
+
+    if args.sample is not None and args.sample_rand is not None:
+        raise SystemExit("Use only one of --sample or --sample-rand.")
 
     # Profile 7: BL + EL (+ RPU). We must remove EL + RPU to get HDR10 base.
     if dv_profile == 7:
@@ -413,57 +466,174 @@ def main():
                 f":color_trc=smpte2084:range={range_out}"
             )
 
-        cmd = [
-            ffmpeg,
-            "-y",
-            "-i",
-            args.input,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-map",
-            "0:s?",
-            "-map",
-            "0:t?",
-            "-map",
-            "0:d?",
-            "-c:v",
-            args.encoder,
-            "-profile:v",
-            "main10",
-            "-pix_fmt",
-            "p010le",
-            "-preset",
-            args.preset,
-            "-rc",
-            "vbr",
-            "-cq",
-            str(args.cq),
-            "-b:v",
-            "0",
-            "-c:a",
-            "copy",
-            "-c:s",
-            "copy",
-            "-c:t",
-            "copy",
-            "-c:d",
-            "copy",
-            "-map_metadata",
-            "0",
-            "-map_chapters",
-            "0",
-        ]
-        if vf:
-            cmd += ["-vf", vf]
-        cmd += color_args + [
-            output_path,
-        ]
+        sample_duration = args.sample
+        sample_rand = args.sample_rand
+
+        if sample_duration is not None or sample_rand is not None:
+            print("Sample mode enabled: output will include only a subset of the video.")
+            has_audio = has_audio_stream(data)
+            if sample_duration is not None:
+                cmd = [
+                    ffmpeg,
+                    "-y",
+                    "-ss",
+                    "0",
+                    "-t",
+                    str(sample_duration),
+                    "-i",
+                    args.input,
+                    "-map",
+                    "0:v:0",
+                ]
+                if has_audio:
+                    cmd += ["-map", "0:a?"]
+                else:
+                    cmd += ["-an"]
+                cmd += [
+                    "-c:v",
+                    args.encoder,
+                    "-profile:v",
+                    "main10",
+                    "-pix_fmt",
+                    "p010le",
+                    "-preset",
+                    args.preset,
+                    "-rc",
+                    "vbr",
+                    "-cq",
+                    str(args.cq),
+                    "-b:v",
+                    "0",
+                    "-c:a",
+                    "copy",
+                    "-map_metadata",
+                    "0",
+                    "-map_chapters",
+                    "0",
+                ]
+                if vf:
+                    cmd += ["-vf", vf]
+                cmd += color_args + [output_path]
+            else:
+                duration = parse_duration_seconds(data)
+                starts = build_sample_segments(
+                    duration, sample_rand, args.sample_seg_len, args.sample_seed
+                )
+                has_audio = has_audio_stream(data)
+                filters = []
+                v_labels = []
+                a_labels = []
+                for i, start in enumerate(starts):
+                    v_label = f"v{i}"
+                    a_label = f"a{i}"
+                    v_chain = (
+                        f"[0:v]trim=start={start}:duration={args.sample_seg_len},"
+                        "setpts=PTS-STARTPTS"
+                    )
+                    if vf:
+                        v_chain += f",{vf}"
+                    v_chain += f"[{v_label}]"
+                    filters.append(v_chain)
+                    v_labels.append(f"[{v_label}]")
+                    if has_audio:
+                        a_chain = (
+                            f"[0:a]atrim=start={start}:duration={args.sample_seg_len},"
+                            "asetpts=PTS-STARTPTS"
+                            f"[{a_label}]"
+                        )
+                        filters.append(a_chain)
+                        a_labels.append(f"[{a_label}]")
+                concat = (
+                    "".join(v_labels)
+                    + "".join(a_labels)
+                    + f"concat=n={len(starts)}:v=1:a={1 if has_audio else 0}[v][a]"
+                )
+                filters.append(concat)
+                cmd = [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    args.input,
+                    "-filter_complex",
+                    ";".join(filters),
+                    "-map",
+                    "[v]",
+                ]
+                if has_audio:
+                    cmd += ["-map", "[a]", "-c:a", "aac"]
+                else:
+                    cmd += ["-an"]
+                cmd += [
+                    "-c:v",
+                    args.encoder,
+                    "-profile:v",
+                    "main10",
+                    "-pix_fmt",
+                    "p010le",
+                    "-preset",
+                    args.preset,
+                    "-rc",
+                    "vbr",
+                    "-cq",
+                    str(args.cq),
+                    "-b:v",
+                    "0",
+                ] + color_args + [output_path]
+        else:
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-i",
+                args.input,
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-map",
+                "0:s?",
+                "-map",
+                "0:t?",
+                "-map",
+                "0:d?",
+                "-c:v",
+                args.encoder,
+                "-profile:v",
+                "main10",
+                "-pix_fmt",
+                "p010le",
+                "-preset",
+                args.preset,
+                "-rc",
+                "vbr",
+                "-cq",
+                str(args.cq),
+                "-b:v",
+                "0",
+                "-c:a",
+                "copy",
+                "-c:s",
+                "copy",
+                "-c:t",
+                "copy",
+                "-c:d",
+                "copy",
+                "-map_metadata",
+                "0",
+                "-map_chapters",
+                "0",
+            ]
+            if vf:
+                cmd += ["-vf", vf]
+            cmd += color_args + [
+                output_path,
+            ]
 
         if run(cmd, args.dry_run) != 0:
             raise SystemExit(1)
         return
+
+    if args.sample is not None or args.sample_rand is not None:
+        raise SystemExit("Sample mode is currently supported only for Profile 5.")
 
     raise SystemExit(f"Unsupported Dolby Vision profile: {dv_profile}")
 
