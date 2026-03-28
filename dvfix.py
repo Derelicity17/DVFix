@@ -13,7 +13,7 @@ import tempfile
 import time
 
 APP_NAME = "DVFix"
-APP_VERSION = "1.1.0"
+APP_VERSION = "0.6.0"
 USE_COLOR = False
 TITLE_ART = (
     " ____   __     ______ _      ",
