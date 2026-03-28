@@ -1,40 +1,26 @@
 # DVFix
 
-CLI utility to convert Dolby Vision to HDR10 while preserving everything else in the file.
+DVFix converts Dolby Vision video to HDR10 while preserving the rest of the file as much as possible.
 
-`dvfix.py` is the main cross-platform entry point. `dvfix.ps1` is a Windows wrapper, and `dvfix.sh` is a Unix shell wrapper. Both wrappers forward arguments to `dvfix.py` so you can launch DVFix without typing the Python command directly.
+It is built for local media files and keeps the workflow simple:
 
-## Requirements
+- run it directly against a file or directory
+- launch it with no input to get guided setup
+- inspect what it would do before converting anything
+- validate your FFmpeg/toolchain before you start a batch
 
-### Common
+`dvfix.py` is the main entry point. `dvfix.ps1` is the Windows launcher. `dvfix.sh` is the Unix shell launcher.
 
-- Python 3
-- `ffmpeg` and `ffprobe` available on `PATH` or placed next to `dvfix.py`
-- `dovi_tool` available on `PATH` or placed next to `dvfix.py` for Dolby Vision Profile 7 sources
+## Start Here
 
-### Windows
-
-- `python` can run from PowerShell
-- `.\dvfix.ps1` is available as a convenience launcher
-- For Profile 5, a Vulkan runtime providing `vulkan-1.dll` is required when using `libplacebo`
-
-### Linux
-
-- Run the tool with `python3`
-- For Profile 5, use an FFmpeg build with `libplacebo` and a working Vulkan loader such as `libvulkan.so.1`
-- If you are not using NVENC on Linux, choose an encoder and preset that your FFmpeg build supports, for example `--encoder libx265 --preset medium`
-
-## Quick Start
-
-Run `dvfix.py` or `dvfix.sh` with no flags to launch the interactive wizard. The wizard can guide you into a conversion run, an `--info` scan, or an environment check.
+If you just want to run it:
 
 ### Windows
 
 ```powershell
-python .\dvfix.py
+.\dvfix.ps1
 .\dvfix.ps1 input.mkv
-python .\dvfix.py --check
-python .\dvfix.py --info input.mkv
+.\dvfix.ps1 "D:\Videos"
 ```
 
 ### Linux
@@ -42,39 +28,48 @@ python .\dvfix.py --info input.mkv
 ```bash
 sh ./dvfix.sh
 sh ./dvfix.sh input.mkv
-sh ./dvfix.sh --check
-sh ./dvfix.sh --info /path/to/input.mkv
+sh ./dvfix.sh /mnt/media/Movies
 ```
 
-## Launchers
+Running DVFix with no input starts a guided flow that can:
 
-- `dvfix.py` is the canonical entry point and works anywhere Python 3 is available.
-- `dvfix.ps1` is the Windows convenience launcher.
-- `dvfix.sh` is the Unix shell convenience launcher. It tries `python3` first, then falls back to `python`.
-- On Unix-like systems, `sh ./dvfix.sh ...` is the safest documented form because it does not depend on the executable bit being preserved by the checkout.
+- start a conversion
+- inspect a file or directory without converting
+- run environment checks before processing media
 
-## Interactive Wizard
+## Common Tasks
 
-Launching DVFix without an input path starts a guided flow with the DVFix ASCII title screen.
+Convert a single file:
 
-The wizard can:
+```powershell
+.\dvfix.ps1 input.mkv
+```
 
-- start a normal conversion run
-- start an inspection-only `--info` run
-- run the environment audit used by `--check`
-- prompt for the input file or directory path
-- prompt for an optional output filename for single-file runs
-- prompt for basic conversion behaviors such as overwrite, replace, and dry-run
+```bash
+sh ./dvfix.sh input.mkv
+```
 
-After the prompts, DVFix shows a launch summary and asks for confirmation before continuing.
+Inspect a file without converting:
 
-By default, output is written next to the input with `.noDV` added:
+```powershell
+.\dvfix.ps1 --info input.mkv
+```
 
-`movie.mkv` -> `movie.noDV.mkv`
+```bash
+sh ./dvfix.sh --info input.mkv
+```
 
-If you provide an output name, `.noDV` will be appended if missing and the output will still be written to the input directory.
+Check whether your system is ready:
 
-You can also pass a directory to scan for video files recursively:
+```powershell
+.\dvfix.ps1 --check
+```
+
+```bash
+sh ./dvfix.sh --check
+```
+
+Process a directory recursively:
 
 ```powershell
 .\dvfix.ps1 "D:\Videos"
@@ -84,75 +79,113 @@ You can also pass a directory to scan for video files recursively:
 sh ./dvfix.sh /mnt/media/Movies
 ```
 
-## Diagnostics
+Create a quick Profile 5 sample:
 
-Use `--check` to validate the local toolchain before converting anything:
-
-```bash
-sh ./dvfix.sh --check
+```powershell
+.\dvfix.ps1 input.mkv --sample 30
 ```
 
-The check reports:
-
-- whether `ffmpeg`, `ffprobe`, and `dovi_tool` were found
-- whether the selected encoder is available
-- whether `dovi_rpu` is present for Profile 8
-- whether `libplacebo` is present and usable for Profile 5
-- whether a Vulkan loader is available
-
-Use `--info` to inspect a file or directory and print the planned action without converting anything:
-
 ```bash
-sh ./dvfix.sh --info input.mkv
+sh ./dvfix.sh input.mkv --sample 30
 ```
 
-## FFmpeg Builds For Profile 5
+## Output Naming
 
-Profile 5 requires a `libplacebo`-enabled FFmpeg build plus Vulkan support.
+By default, DVFix writes output next to the source file and adds `.noDV` before the extension:
 
-DVFix prefers binaries in the working directory first, then the directory containing `dvfix.py`, then `PATH`. That means you can drop `ffmpeg` and `ffprobe` next to the script to override the system install.
+`movie.mkv` -> `movie.noDV.mkv`
 
-Quick check:
+If you pass an output name for a single-file run, DVFix still writes it to the input directory and adds `.noDV` if needed.
+
+## What DVFix Does
+
+- **Profile 7**: extracts the HEVC stream, removes EL/RPU with `dovi_tool`, then remuxes the HDR10 base layer
+- **Profile 8**: strips Dolby Vision RPU metadata in-place with FFmpeg
+- **Profile 5**: re-encodes the video stream to HDR10 because there is no HDR10 base layer to preserve
+
+For non-sample workflows, DVFix preserves audio, subtitles, attachments, chapters, and container metadata.
+
+## Requirements
+
+### Required Everywhere
+
+- Python 3
+- `ffmpeg` and `ffprobe` on `PATH`, or placed next to `dvfix.py`
+
+### Required For Specific Inputs
+
+- `dovi_tool` for Profile 7 inputs
+- FFmpeg with the `dovi_rpu` bitstream filter for Profile 8 inputs
+- FFmpeg with `libplacebo` for normal Profile 5 HDR conversion
+
+### Platform Notes
+
+Windows:
+
+- `.\dvfix.ps1` is the easiest launcher
+- Profile 5 with `libplacebo` requires a Vulkan runtime that provides `vulkan-1.dll`
+
+Linux:
+
+- `sh ./dvfix.sh` is the documented launcher
+- Profile 5 with `libplacebo` requires a working Vulkan loader such as `libvulkan.so.1`
+- If you are not using NVENC, choose an encoder your FFmpeg build supports, for example `--encoder libx265 --preset medium`
+
+## Checks And Inspection
+
+Use `--check` before a big run if you want DVFix to verify the local toolchain first.
+
+It checks for:
+
+- `ffmpeg`
+- `ffprobe`
+- `dovi_tool`
+- the selected encoder
+- `dovi_rpu` support for Profile 8
+- `libplacebo` support for Profile 5
+- Vulkan loader availability
+
+Use `--info` when you want DVFix to probe input, report the detected Dolby Vision profile, and show the planned action without writing output.
+
+## Profile 5 Notes
+
+Profile 5 is the most demanding path.
+
+- It must re-encode video.
+- The default encoder is `hevc_nvenc`.
+- On systems without NVENC, you should override `--encoder` and usually `--preset`.
+- If `libplacebo` cannot run, DVFix can still continue with `--p5-force-tag`, but colors may be wrong.
+
+Quick FFmpeg sanity check:
 
 ```bash
 ffmpeg -hide_banner -f lavfi -i color=c=black:s=16x16:d=0.1 -vf libplacebo -frames:v 1 -f null -
 ```
 
-If you see `vkGetInstanceProcAddr` errors, your FFmpeg build is not linked against the Vulkan loader. Replace it with a Vulkan-enabled build and retry.
-
-## What It Does
-
-- **Profile 7**: Extracts the HEVC bitstream, removes EL + RPU via `dovi_tool`, remuxes the HDR10 base layer, and copies all other streams unchanged.
-- **Profile 8**: Strips Dolby Vision RPU metadata in-place with FFmpeg and copies everything else unchanged.
-- **Profile 5**: Re-encodes video to HDR10. Other streams are preserved for the full conversion path. The default encoder is `hevc_nvenc`, so non-NVENC systems should override `--encoder` and usually `--preset`.
+If that fails with `vkGetInstanceProcAddr`, your FFmpeg build is not linked against the Vulkan loader.
 
 ## Options
 
 - `--check` Validate tools and common codec capabilities, then exit.
 - `--info` Inspect input and print the planned action without converting anything.
-- `--encoder` Video encoder for re-encode workflows (default: `hevc_nvenc`).
-- `--preset` Encoder preset for re-encode workflows (default: `p7`).
-- `--cq` Constant-quality value for re-encode workflows (default: `19`).
-- `--p5-force-tag` For Profile 5, skip DV processing and only tag HDR10. Colors are likely wrong.
-- `--sample N` Encode only the first `N` seconds as a quick test clip.
-- `--sample-rand N` Create a test clip from `N` random segments.
-- `--sample-seg-len N` Segment length for `--sample-rand` (default: `2` seconds).
-- `--sample-seed N` Seed for random sampling.
+- `--encoder` Video encoder for re-encode workflows. Default: `hevc_nvenc`.
+- `--preset` Encoder preset for re-encode workflows. Default: `p7`.
+- `--cq` Constant-quality value for re-encode workflows. Default: `19`.
+- `--p5-force-tag` Skip Dolby Vision processing for Profile 5 and only tag HDR10. Colors may be wrong.
+- `--sample N` Encode only the first `N` seconds.
+- `--sample-rand N` Build a sample clip from `N` random segments.
+- `--sample-seg-len N` Segment length for `--sample-rand`. Default: `2`.
+- `--sample-seed N` Seed for repeatable random sampling.
 - `--replace` Delete the original file after a successful conversion.
-- `--temp` Custom temp directory.
+- `--temp` Use a custom temp directory.
 - `--keep-temp` Keep temp files for debugging.
 - `--yes` Skip prompts.
-- `--overwrite` Overwrite output if it already exists.
-- `--dry-run` Print commands without executing them.
+- `--overwrite` Replace an existing output file.
+- `--dry-run` Print commands without running them.
 - `--no-color` or `--plain` Disable ANSI terminal styling.
 
 ## Notes
 
 - This repo is code-only and does not include third-party binaries.
-- The tool preserves audio, subtitles, attachments, chapters, and container metadata for the non-sample workflows.
 - Only single-video-stream inputs are supported.
-- For Profile 8, FFmpeg must include the `dovi_rpu` bitstream filter.
-- For Profile 5, re-encoding is unavoidable because there is no HDR10 base layer.
-- For Profile 5 on Windows, `vulkan-1.dll` must be available.
-- For Profile 5 on Linux, a working Vulkan loader such as `libvulkan.so.1` must be available.
 - Sample mode is currently supported only for Profile 5.
