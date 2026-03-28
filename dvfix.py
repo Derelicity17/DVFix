@@ -1,20 +1,153 @@
 #!/usr/bin/env python3
 import argparse
+import ctypes
 import json
 import os
+import platform
 import random
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-import ctypes
+import time
+
+APP_NAME = "DVFix"
+APP_VERSION = "1.1.0"
+USE_COLOR = False
+TITLE_ART = (
+    " ____   __     ______ _      ",
+    "|  _ \\  \\ \\   / /  ___(_)_  __",
+    "| | | |  \\ \\ / /| |_  | \\ \\/ /",
+    "| |_| |   \\ V / |  _| | |>  < ",
+    "|____/     \\_/  |_|   |_/_/\\_\\",
+)
 
 
 def eprint(msg):
     print(msg, file=sys.stderr)
 
 
-def which_or_die(name):
+def configure_output(no_color):
+    global USE_COLOR
+    USE_COLOR = False
+    if no_color or os.environ.get("NO_COLOR"):
+        return
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return
+    USE_COLOR = True
+    if os.name != "nt":
+        return
+    try:
+        handle = ctypes.windll.kernel32.GetStdHandle(-11)
+        mode = ctypes.c_ulong()
+        if ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            ctypes.windll.kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        USE_COLOR = False
+
+
+def paint(text, color):
+    if not USE_COLOR:
+        return text
+    colors = {
+        "blue": "\033[34m",
+        "cyan": "\033[36m",
+        "green": "\033[32m",
+        "yellow": "\033[33m",
+        "red": "\033[31m",
+        "dim": "\033[2m",
+        "reset": "\033[0m",
+    }
+    return f"{colors[color]}{text}{colors['reset']}"
+
+
+def line(text=""):
+    print(text)
+
+
+def rule(label):
+    line(paint(f"==== {label} ====", "cyan"))
+
+
+def print_title_art(tagline=None):
+    line("")
+    for art_line in TITLE_ART:
+        line(paint(art_line, "cyan"))
+    if tagline:
+        line(paint(f"  {tagline}", "blue"))
+
+
+def kv(key, value):
+    line(f"  {key:<12} {value}")
+
+
+def log(level, message, color):
+    line(f"{paint(f'[{level}]', color)} {message}")
+
+
+def info(message):
+    log("INFO", message, "blue")
+
+
+def step(message):
+    log("STEP", message, "cyan")
+
+
+def success(message):
+    log("OK", message, "green")
+
+
+def warn(message):
+    log("WARN", message, "yellow")
+
+
+def fail(message):
+    log("FAIL", message, "red")
+
+
+def command_line(cmd):
+    if os.name == "nt":
+        formatted = subprocess.list2cmdline(cmd)
+    else:
+        formatted = shlex.join(cmd)
+    line(paint(f"  $ {formatted}", "dim"))
+
+
+def format_seconds(seconds):
+    if seconds is None:
+        return "n/a"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, rem = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {rem:.0f}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours)}h {int(minutes)}m {rem:.0f}s"
+
+
+def format_duration_value(duration_value):
+    try:
+        seconds = float(duration_value)
+    except (TypeError, ValueError):
+        return None
+    return format_seconds(seconds)
+
+
+def format_size_bytes(size_value):
+    try:
+        size = float(size_value)
+    except (TypeError, ValueError):
+        return None
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    unit_index = 0
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024.0
+        unit_index += 1
+    return f"{size:.1f} {units[unit_index]}"
+
+
+def find_tool(name):
     candidates = [name]
     if os.name == "nt" and not name.lower().endswith(".exe"):
         candidates.append(f"{name}.exe")
@@ -33,30 +166,59 @@ def which_or_die(name):
     path = shutil.which(name)
     if not path and os.name == "nt" and name.lower().endswith(".exe"):
         path = shutil.which(name[:-4])
+    return path
+
+
+def which_or_die(name):
+    path = find_tool(name)
     if not path:
         eprint(f"Missing required tool: {name}. Make sure it is on PATH.")
         raise SystemExit(2)
     return path
 
 
-def run(cmd, dry_run=False):
+def run(cmd, dry_run=False, label=None):
+    if label:
+        step(label)
+    command_line(cmd)
     if dry_run:
-        print("DRY-RUN:", " ".join(cmd))
+        info("Dry-run enabled; command was not executed.")
         return 0
-    print(">", " ".join(cmd))
+    started = time.time()
     proc = subprocess.run(cmd)
+    elapsed = time.time() - started
+    if proc.returncode == 0:
+        success(f"{label or 'Command'} completed in {format_seconds(elapsed)}.")
+    else:
+        fail(
+            f"{label or 'Command'} failed with exit code {proc.returncode} after {format_seconds(elapsed)}."
+        )
     return proc.returncode
 
 
-def ffmpeg_has_filter(ffmpeg, name):
+def ffmpeg_list_contains(ffmpeg, flag, name):
     try:
-        out = subprocess.check_output(
-            [ffmpeg, "-hide_banner", "-filters"], stderr=subprocess.STDOUT
-        ).decode("utf-8", errors="ignore")
+        out = subprocess.check_output([ffmpeg, "-hide_banner", flag], stderr=subprocess.STDOUT).decode(
+            "utf-8", errors="ignore"
+        )
     except subprocess.CalledProcessError:
         return False
-    token = f" {name} "
-    return token in out
+    for line_text in out.splitlines():
+        if name in line_text.split():
+            return True
+    return False
+
+
+def ffmpeg_has_filter(ffmpeg, name):
+    return ffmpeg_list_contains(ffmpeg, "-filters", name)
+
+
+def ffmpeg_has_bsf(ffmpeg, name):
+    return ffmpeg_list_contains(ffmpeg, "-bsfs", name)
+
+
+def ffmpeg_has_encoder(ffmpeg, name):
+    return ffmpeg_list_contains(ffmpeg, "-encoders", name)
 
 
 def ffmpeg_libplacebo_usable(ffmpeg):
@@ -113,7 +275,7 @@ def has_vulkan_loader():
     return False
 
 
-def ffprobe_json(ffprobe, input_path):
+def ffprobe_json(ffprobe, input_path, quiet=False):
     cmd = [
         ffprobe,
         "-v",
@@ -127,8 +289,9 @@ def ffprobe_json(ffprobe, input_path):
     try:
         out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError as exc:
-        eprint("ffprobe failed:")
-        eprint(exc.output.decode(errors="ignore"))
+        if not quiet:
+            eprint("ffprobe failed:")
+            eprint(exc.output.decode(errors="ignore"))
         raise SystemExit(exc.returncode)
     return json.loads(out.decode("utf-8", errors="ignore"))
 
@@ -241,7 +404,7 @@ def resolve_output_path(input_path, output_arg):
     input_dir = os.path.dirname(os.path.abspath(input_path))
     if output_dir != input_dir:
         output_path = os.path.join(input_dir, os.path.basename(output_path))
-        print(f"Output directory forced to input directory: {output_path}")
+        warn(f"Output directory forced to input directory: {output_path}")
     return output_path
 
 
@@ -254,30 +417,27 @@ def format_stream_info(video_stream):
     return f"{codec} {res} {pix_fmt}"
 
 
-def print_detection(input_path, data, video_stream, dv_profile):
+def print_detection(input_path, output_path, data, video_stream, dv_profile):
     fmt = data.get("format", {})
     fmt_name = fmt.get("format_name") or "unknown"
-    duration = fmt.get("duration")
-    size = fmt.get("size")
-    print("Detection:")
-    print(f"  Input: {input_path}")
-    print(f"  Container: {fmt_name}")
+    duration = format_duration_value(fmt.get("duration"))
+    size = format_size_bytes(fmt.get("size"))
+    kv("Input", input_path)
+    kv("Output", output_path)
+    kv("Container", fmt_name)
     if duration:
-        print(f"  Duration: {duration} sec")
+        kv("Duration", duration)
     if size:
-        print(f"  Size: {size} bytes")
-    vinfo = format_stream_info(video_stream)
-    print(f"  Video: {vinfo}")
+        kv("Size", size)
+    kv("Video", format_stream_info(video_stream))
     tags = get_color_tags(video_stream)
-    tag_line = ", ".join(
-        f"{k}={v}" for k, v in tags.items() if v
-    )
+    tag_line = ", ".join(f"{k}={v}" for k, v in tags.items() if v)
     if tag_line:
-        print(f"  Color: {tag_line}")
+        kv("Color", tag_line)
     if dv_profile is None:
-        print("  Dolby Vision: not found")
+        kv("Dolby Vision", "not found")
     else:
-        print(f"  Dolby Vision: profile {dv_profile}")
+        kv("Dolby Vision", f"profile {dv_profile}")
 
 
 def parse_duration_seconds(data):
@@ -321,70 +481,225 @@ def collect_input_files(path):
                 ext = os.path.splitext(name)[1].lower()
                 if ext in video_exts:
                     files.append(os.path.join(root, name))
+        files.sort()
         return files
     return [path]
 
 
+def get_planned_action(dv_profile, args):
+    if dv_profile is None:
+        return "skip", "Skip: no Dolby Vision metadata found."
+    if dv_profile == 7:
+        if args.sample is not None or args.sample_rand is not None:
+            return "skip", "Skip: sample mode is only supported for Profile 5."
+        return "convert", "Convert Profile 7 by stripping EL/RPU and remuxing the HDR10 base layer."
+    if dv_profile == 8:
+        if args.sample is not None or args.sample_rand is not None:
+            return "skip", "Skip: sample mode is only supported for Profile 5."
+        return "convert", "Convert Profile 8 by stripping Dolby Vision RPU metadata in-place."
+    if dv_profile == 5:
+        if args.p5_force_tag:
+            return "convert", "Convert Profile 5 by re-encoding and forcing HDR10 tags only."
+        return "convert", "Convert Profile 5 by re-encoding to HDR10 with libplacebo."
+    return "skip", f"Skip: unsupported Dolby Vision profile {dv_profile}."
+
+
+def get_profile_requirements(dv_profile, args):
+    if dv_profile == 7:
+        return ["dovi_tool"]
+    if dv_profile == 8:
+        return ["ffmpeg bitstream filter dovi_rpu"]
+    if dv_profile == 5:
+        requirements = [f"encoder {args.encoder}"]
+        if not args.p5_force_tag:
+            requirements += ["ffmpeg filter libplacebo", "Vulkan loader"]
+        return requirements
+    return []
+
+
+def print_info_plan(dv_profile, args, output_exists):
+    _action_kind, action_text = get_planned_action(dv_profile, args)
+    kv("Plan", action_text)
+    requirements = get_profile_requirements(dv_profile, args)
+    if requirements:
+        kv("Needs", ", ".join(requirements))
+    if output_exists:
+        kv("Guard", "Output already exists and would be skipped without --overwrite.")
+
+
+def print_header(mode_name, args, input_count=None):
+    taglines = {
+        "check": "environment audit",
+        "info": "inspection mode",
+        "convert": "conversion mode",
+    }
+    print_title_art(taglines.get(mode_name))
+    rule(f"{APP_NAME} {APP_VERSION}")
+    kv("Mode", mode_name)
+    kv("Platform", f"{platform.system()} {platform.release()}")
+    if args.input:
+        kv("Input", args.input)
+    if input_count is not None:
+        kv("Files", input_count)
+    kv("Encoder", args.encoder)
+    kv("Preset", args.preset)
+    if args.temp:
+        kv("Temp", args.temp)
+    if args.dry_run:
+        kv("Dry-run", "enabled")
+    if args.info:
+        kv("Conversion", "disabled")
+
+
+def print_batch_progress(results, total_count, info_mode):
+    if info_mode:
+        info(
+            f"Batch progress: {sum(results.values())}/{total_count} complete | "
+            f"inspected {results['inspected']} | skipped {results['skipped']} | failed {results['failed']}"
+        )
+    else:
+        info(
+            f"Batch progress: {sum(results.values())}/{total_count} complete | "
+            f"converted {results['converted']} | skipped {results['skipped']} | failed {results['failed']}"
+        )
+
+
+def print_summary(results, info_mode, total_elapsed):
+    rule("Summary")
+    if info_mode:
+        kv("Inspected", results["inspected"])
+    else:
+        kv("Converted", results["converted"])
+    kv("Skipped", results["skipped"])
+    kv("Failed", results["failed"])
+    kv("Elapsed", format_seconds(total_elapsed))
+
+
+def run_environment_check(ffmpeg, ffprobe, args):
+    overall_ok = True
+    rule("Environment Check")
+    if ffmpeg:
+        success(f"ffmpeg found: {ffmpeg}")
+    else:
+        fail("ffmpeg not found.")
+        overall_ok = False
+    if ffprobe:
+        success(f"ffprobe found: {ffprobe}")
+    else:
+        fail("ffprobe not found.")
+        overall_ok = False
+
+    dovi_tool = find_tool("dovi_tool")
+    if dovi_tool:
+        success(f"dovi_tool found: {dovi_tool}")
+    else:
+        warn("dovi_tool not found. Profile 7 inputs will fail until it is installed.")
+
+    if ffmpeg:
+        if ffmpeg_has_encoder(ffmpeg, args.encoder):
+            success(f"Encoder available: {args.encoder}")
+        else:
+            fail(f"Encoder not available: {args.encoder}")
+            overall_ok = False
+
+        if ffmpeg_has_bsf(ffmpeg, "dovi_rpu"):
+            success("Bitstream filter dovi_rpu is available for Profile 8 stripping.")
+        else:
+            warn("Bitstream filter dovi_rpu is missing. Profile 8 stripping will fail.")
+
+        if ffmpeg_has_filter(ffmpeg, "libplacebo"):
+            success("Filter libplacebo is available for Profile 5 HDR conversion.")
+            usable, reason = ffmpeg_libplacebo_usable(ffmpeg)
+            if usable:
+                success("libplacebo runtime check passed.")
+            else:
+                warn(f"libplacebo runtime check failed: {reason}")
+        else:
+            warn(
+                "Filter libplacebo is missing. Profile 5 will need --p5-force-tag or a different FFmpeg build."
+            )
+
+    if has_vulkan_loader():
+        success("Vulkan loader detected.")
+    else:
+        warn("Vulkan loader not found. Profile 5 libplacebo runs will fail.")
+
+    line("")
+    if overall_ok:
+        success("Environment check passed for probing and the selected encoder.")
+        return 0
+    fail("Environment check failed. Fix the required items above and rerun.")
+    return 2
+
+
 def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
+    started = time.time()
     if not os.path.exists(input_path):
-        print(f"Skipping missing file: {input_path}")
+        warn(f"Skipping missing file: {input_path}")
         return "skipped"
     if is_no_dv_name(input_path):
-        print(f"Skipping already-processed file: {input_path}")
+        warn(f"Skipping already-processed file: {input_path}")
         return "skipped"
 
     output_path = resolve_output_path(input_path, output_arg)
-    if os.path.exists(output_path) and not args.overwrite:
-        print(f"Skipping existing output: {output_path} (use --overwrite to replace)")
-        return "skipped"
+    output_exists = os.path.exists(output_path) and not args.overwrite
 
     try:
-        data = ffprobe_json(ffprobe, input_path)
+        data = ffprobe_json(ffprobe, input_path, quiet=True)
     except SystemExit:
-        print(f"Skipping non-media file: {input_path}")
+        warn(f"Skipping non-media file: {input_path}")
         return "skipped"
 
     try:
         video = pick_video_stream(data)
     except SystemExit as exc:
-        print(f"Skipping: {exc}")
+        warn(f"Skipping: {exc}")
         return "skipped"
 
     if video.get("codec_name") != "hevc":
-        print("Skipping: input video is not HEVC.")
-        print(f"  File: {input_path}")
+        warn("Skipping: input video is not HEVC.")
+        kv("File", input_path)
         return "skipped"
 
     dv_profile = get_dv_profile(video)
-    print_detection(input_path, data, video, dv_profile)
-    print(f"  Output: {output_path}")
+    print_detection(input_path, output_path, data, video, dv_profile)
+    if not has_complete_color_tags(get_color_tags(video)):
+        warn("Input video is missing some color tags; output tags will fall back to HDR10 defaults.")
 
-    if dv_profile is None:
-        print("  Action: skip (no Dolby Vision metadata)")
+    action_kind, action_text = get_planned_action(dv_profile, args)
+    if args.info:
+        print_info_plan(dv_profile, args, output_exists)
+        return "inspected"
+
+    if output_exists:
+        warn(f"Skipping existing output: {output_path} (use --overwrite to replace)")
         return "skipped"
 
-    if args.sample is not None and args.sample_rand is not None:
-        print("  Action: skip (invalid sample options)")
+    if action_kind == "skip":
+        warn(action_text)
         return "skipped"
 
     def finalize_success():
         if args.replace:
             try:
                 os.remove(input_path)
-                print(f"Removed original: {input_path}")
+                success(f"Removed original: {input_path}")
             except OSError as exc:
-                print(f"Warning: failed to remove original ({exc})")
+                warn(f"Converted output created, but failed to remove original ({exc})")
+        success(f"Finished {os.path.basename(input_path)} in {format_seconds(time.time() - started)}.")
         return "converted"
 
     # Profile 7: BL + EL (+ RPU). We must remove EL + RPU to get HDR10 base.
     if dv_profile == 7:
-        if args.sample is not None or args.sample_rand is not None:
-            print("  Action: skip (sample mode only supports Profile 5)")
-            return "skipped"
-        print("  Action: convert Profile 7 (strip EL/RPU)")
-        dovi_tool = which_or_die("dovi_tool")
+        step("Profile 7 workflow selected.")
+        try:
+            dovi_tool = which_or_die("dovi_tool")
+        except SystemExit:
+            fail("Profile 7 conversion requires dovi_tool.")
+            return "failed"
         temp_root = args.temp or tempfile.gettempdir()
         temp_dir = tempfile.mkdtemp(prefix="dvfix_", dir=temp_root)
+        kv("Temp", temp_dir)
         try:
             in_hevc = os.path.join(temp_dir, "input.hevc")
             bl_hevc = os.path.join(temp_dir, "bl.hevc")
@@ -404,11 +719,11 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
                 "hevc",
                 in_hevc,
             ]
-            if run(cmd1, args.dry_run) != 0:
+            if run(cmd1, args.dry_run, "Step 1/3: Extract HEVC base stream") != 0:
                 return "failed"
 
             cmd2 = [dovi_tool, "remove", in_hevc, "-o", bl_hevc]
-            if run(cmd2, args.dry_run) != 0:
+            if run(cmd2, args.dry_run, "Step 2/3: Remove Dolby Vision EL/RPU") != 0:
                 return "failed"
 
             cmd3 = [
@@ -432,19 +747,21 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
                 "1",
                 output_path,
             ]
-            if run(cmd3, args.dry_run) != 0:
+            if run(cmd3, args.dry_run, "Step 3/3: Remux HDR10 base layer") != 0:
                 return "failed"
         finally:
-            if not args.keep_temp:
+            if args.keep_temp:
+                info(f"Keeping temporary files: {temp_dir}")
+            else:
                 shutil.rmtree(temp_dir, ignore_errors=True)
         return finalize_success()
 
     # Profile 8 (HDR10 base + DV metadata): strip DV metadata without re-encode.
     if dv_profile == 8:
-        if args.sample is not None or args.sample_rand is not None:
-            print("  Action: skip (sample mode only supports Profile 5)")
-            return "skipped"
-        print("  Action: convert Profile 8 (strip RPU)")
+        step("Profile 8 workflow selected.")
+        if not ffmpeg_has_bsf(ffmpeg, "dovi_rpu"):
+            fail("Profile 8 conversion requires the dovi_rpu bitstream filter in FFmpeg.")
+            return "failed"
         cmd = [
             ffmpeg,
             "-y",
@@ -462,28 +779,31 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
             "0",
             output_path,
         ]
-        if run(cmd, args.dry_run) != 0:
+        if run(cmd, args.dry_run, "Step 1/1: Strip Dolby Vision RPU metadata") != 0:
             return "failed"
         return finalize_success()
 
     # Profile 5 (single-layer DV): requires re-encode.
     if dv_profile == 5:
-        print("  Action: convert Profile 5 (re-encode)")
+        step("Profile 5 workflow selected.")
+        if not ffmpeg_has_encoder(ffmpeg, args.encoder):
+            fail(f"Selected encoder is not available in FFmpeg: {args.encoder}")
+            return "failed"
         if not confirm_reencode(output_path, args.yes):
-            print("  Action: cancelled by user")
+            warn("Cancelled by user.")
             return "skipped"
 
         color_tags = get_color_tags(video)
         color_args = build_hdr10_color_args(color_tags)
         vf = None
         if args.p5_force_tag:
-            print(
+            warn(
                 "Profile 5: forcing tag-only output (DV processing skipped; colors may be wrong)."
             )
         else:
             has_libplacebo = ffmpeg_has_filter(ffmpeg, "libplacebo")
             if not has_libplacebo:
-                print(
+                fail(
                     "Profile 5 requires ffmpeg with libplacebo to apply Dolby Vision metadata. "
                     "Install a libplacebo-enabled ffmpeg build or rerun with --p5-force-tag to "
                     "continue with likely-wrong colors."
@@ -491,13 +811,13 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
                 return "failed"
             ok, reason = ffmpeg_libplacebo_usable(ffmpeg)
             if not ok:
-                print(
+                fail(
                     f"Profile 5: {reason} "
                     "Install a Vulkan-enabled FFmpeg build or use --p5-force-tag."
                 )
                 return "failed"
             if not has_vulkan_loader():
-                print(
+                fail(
                     "Profile 5 requires Vulkan (vulkan-1.dll) for libplacebo. "
                     "Install/repair your NVIDIA drivers or Vulkan runtime, or place "
                     "vulkan-1.dll next to ffmpeg.exe, then retry. "
@@ -519,7 +839,7 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
         sample_rand = args.sample_rand
 
         if sample_duration is not None or sample_rand is not None:
-            print("  Sample mode enabled: output will include only a subset of the video.")
+            info("Sample mode enabled; output will include only a subset of the video.")
             has_audio = has_audio_stream(data)
             if sample_duration is not None:
                 cmd = [
@@ -563,11 +883,16 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
                 if vf:
                     cmd += ["-vf", vf]
                 cmd += color_args + [output_path]
+                run_label = "Step 1/1: Re-encode first sample segment to HDR10"
             else:
                 duration = parse_duration_seconds(data)
-                starts = build_sample_segments(
-                    duration, sample_rand, args.sample_seg_len, args.sample_seed
-                )
+                try:
+                    starts = build_sample_segments(
+                        duration, sample_rand, args.sample_seg_len, args.sample_seed
+                    )
+                except SystemExit as exc:
+                    fail(str(exc))
+                    return "failed"
                 has_audio = has_audio_stream(data)
                 filters = []
                 v_labels = []
@@ -628,6 +953,7 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
                     "-b:v",
                     "0",
                 ] + color_args + [output_path]
+                run_label = "Step 1/1: Re-encode random sample montage to HDR10"
         else:
             cmd = [
                 ffmpeg,
@@ -676,42 +1002,174 @@ def process_file(input_path, output_arg, args, ffmpeg, ffprobe):
             cmd += color_args + [
                 output_path,
             ]
+            run_label = "Step 1/1: Re-encode video stream to HDR10"
 
-        if run(cmd, args.dry_run) != 0:
+        if run(cmd, args.dry_run, run_label) != 0:
             return "failed"
         return finalize_success()
 
-    print(f"  Action: skip (unsupported Dolby Vision profile: {dv_profile})")
+    warn(f"Skip: unsupported Dolby Vision profile {dv_profile}.")
     return "skipped"
 
 
 def confirm_reencode(output_path, assume_yes):
     if assume_yes:
         return True
-    print("")
-    print("Profile 5 detected. This requires re-encoding the video to HDR10.")
-    print("Re-encoding means the video stream will be recompressed, which can change")
-    print("quality and will take time. Audio, subtitles, chapters, and metadata stay")
-    print("bit-for-bit the same.")
-    print("")
-    resp = input(f"Proceed with re-encoding to {output_path}? [y/N]: ").strip().lower()
+    line("")
+    warn("Profile 5 requires re-encoding the video stream to HDR10.")
+    kv("Output", output_path)
+    kv("Video", "Will be recompressed; audio, subtitles, chapters, and metadata remain untouched.")
+    resp = read_prompt("Proceed with re-encoding? [y/N]: ").strip().lower()
     return resp in ("y", "yes")
 
 
 def confirm_replace_all(assume_yes):
     if assume_yes:
         return True
-    print("")
-    print("WARNING: --replace will delete original files after successful conversion.")
-    resp = input("Proceed with --replace? [y/N]: ").strip().lower()
+    line("")
+    warn("--replace will delete original files after successful conversion.")
+    resp = read_prompt("Proceed with --replace? [y/N]: ").strip().lower()
     return resp in ("y", "yes")
+
+
+def read_prompt(prompt):
+    try:
+        return input(prompt)
+    except EOFError as exc:
+        raise SystemExit("Wizard cancelled because no input was available on stdin.") from exc
+
+
+def prompt_choice(prompt, options, default_index=1):
+    line("")
+    line(paint(prompt, "blue"))
+    for index, (_value, label) in enumerate(options, start=1):
+        default_tag = " [default]" if index == default_index else ""
+        bullet = ">" if index == default_index else "-"
+        line(f"  {bullet} [{index}] {label}{default_tag}")
+    while True:
+        response = read_prompt(f"Choose an option [{default_index}]: ").strip()
+        if not response:
+            return options[default_index - 1][0]
+        if response.isdigit():
+            index = int(response)
+            if 1 <= index <= len(options):
+                return options[index - 1][0]
+        warn("Enter one of the listed option numbers.")
+
+
+def prompt_yes_no(prompt, default=False):
+    suffix = "[Y/n]" if default else "[y/N]"
+    while True:
+        response = read_prompt(f"{prompt} {suffix}: ").strip().lower()
+        if not response:
+            return default
+        if response in ("y", "yes"):
+            return True
+        if response in ("n", "no"):
+            return False
+        warn("Enter y or n.")
+
+
+def prompt_text(prompt, allow_blank=False):
+    while True:
+        response = read_prompt(f"{prompt}: ").strip()
+        if response or allow_blank:
+            return response
+        warn("A value is required.")
+
+
+def prompt_existing_path(prompt):
+    while True:
+        response = prompt_text(prompt)
+        cleaned = response.strip().strip('"').strip("'")
+        expanded = os.path.expanduser(cleaned)
+        if os.path.exists(expanded):
+            return expanded
+        warn("That path does not exist. Try again.")
+
+
+def run_wizard(args):
+    print_title_art("guided mode")
+    rule("Wizard")
+    info("No input was provided, so DVFix is switching to guided mode.")
+    kv("Goal", "Guide you into convert, inspect, or check without memorizing flags.")
+    kv("Hint", "Press Enter to accept the default option shown in brackets.")
+
+    rule("Mission")
+    mode = prompt_choice(
+        "What would you like to do?",
+        [
+            ("convert", "Convert a file or directory"),
+            ("info", "Inspect input only (--info)"),
+            ("check", "Run environment checks (--check)"),
+            ("quit", "Exit"),
+        ],
+        default_index=1,
+    )
+
+    if mode == "quit":
+        raise SystemExit(0)
+
+    if mode == "check":
+        args.check = True
+        return args
+
+    args.info = mode == "info"
+
+    rule("Source")
+    args.input = prompt_existing_path("Enter the input file or directory path")
+
+    if os.path.isfile(args.input):
+        output_name = prompt_text(
+            "Optional output file name (leave blank for automatic .noDV naming)",
+            allow_blank=True,
+        )
+        args.output = output_name or None
+    else:
+        args.output = None
+        info("Directory input selected. Output names will be generated next to each file.")
+
+    if not args.info:
+        rule("Behavior")
+        args.overwrite = prompt_yes_no("Overwrite existing outputs if they already exist?", default=False)
+        args.replace = prompt_yes_no("Delete originals after successful conversion?", default=False)
+        args.dry_run = prompt_yes_no("Show commands without executing them?", default=False)
+
+    line("")
+    rule("Launch Pad")
+    kv("Mode", "info" if args.info else "convert")
+    kv("Input", args.input)
+    if args.output:
+        kv("Output", ensure_no_dv_suffix(args.output))
+    else:
+        kv("Output", "automatic .noDV naming")
+    if not args.info:
+        kv("Overwrite", "yes" if args.overwrite else "no")
+        kv("Replace", "yes" if args.replace else "no")
+        kv("Dry-run", "yes" if args.dry_run else "no")
+
+    if not prompt_yes_no("Start with these settings now?", default=True):
+        raise SystemExit("Cancelled by user.")
+
+    return args
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Convert Dolby Vision to HDR10 while preserving all non-video streams."
     )
-    parser.add_argument("input", help="Input file or directory (MKV/MP4/…)")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate tools and common codec capabilities, then exit.",
+    )
+    mode_group.add_argument(
+        "--info",
+        action="store_true",
+        help="Inspect input and print the planned action without converting anything.",
+    )
+    parser.add_argument("input", nargs="?", help="Input file or directory (MKV/MP4/…)")
     parser.add_argument("output", nargs="?", help="Output file (file input only)")
     parser.add_argument(
         "--encoder",
@@ -787,19 +1245,49 @@ def main():
         action="store_true",
         help="Print commands without running them",
     )
+    parser.add_argument(
+        "--no-color",
+        "--plain",
+        dest="no_color",
+        action="store_true",
+        help="Disable ANSI styling in terminal output",
+    )
     args = parser.parse_args()
+    configure_output(args.no_color)
 
-    ffmpeg = which_or_die("ffmpeg")
-    ffprobe = which_or_die("ffprobe")
+    if args.check:
+        if args.input or args.output:
+            parser.error("--check does not take input or output paths.")
+    elif not args.input:
+        args = run_wizard(args)
 
     if args.sample is not None and args.sample_rand is not None:
-        raise SystemExit("Use only one of --sample or --sample-rand.")
+        parser.error("Use only one of --sample or --sample-rand.")
+    if args.sample is not None and args.sample <= 0:
+        parser.error("--sample must be greater than zero.")
+    if args.sample_rand is not None and args.sample_rand <= 0:
+        parser.error("--sample-rand must be greater than zero.")
+    if args.sample_seg_len <= 0:
+        parser.error("--sample-seg-len must be greater than zero.")
+    if args.temp:
+        if not os.path.isdir(args.temp):
+            parser.error("--temp must point to an existing directory.")
+        if not os.access(args.temp, os.W_OK):
+            parser.error("--temp is not writable.")
+
+    ffmpeg = which_or_die("ffmpeg") if not args.check else find_tool("ffmpeg")
+    ffprobe = which_or_die("ffprobe") if not args.check else find_tool("ffprobe")
+
+    if args.check:
+        print_header("check", args)
+        raise SystemExit(run_environment_check(ffmpeg, ffprobe, args))
+
     if args.sample is not None or args.sample_rand is not None:
         if args.replace:
-            print("WARNING: --replace is ignored in sample mode.")
+            warn("--replace is ignored in sample mode.")
             args.replace = False
 
-    if args.replace and not confirm_replace_all(args.yes):
+    if args.replace and not args.info and not confirm_replace_all(args.yes):
         raise SystemExit("Cancelled by user.")
 
     inputs = collect_input_files(args.input)
@@ -807,18 +1295,30 @@ def main():
         raise SystemExit(f"No candidate video files found in: {args.input}")
 
     if os.path.isdir(args.input) and args.output:
-        print("Note: output argument is ignored when input is a directory.")
+        warn("Output argument is ignored when input is a directory.")
 
-    results = {"converted": 0, "skipped": 0, "failed": 0}
-    for path in inputs:
-        status = process_file(path, args.output if not os.path.isdir(args.input) else None, args, ffmpeg, ffprobe)
+    total_started = time.time()
+    results = {"converted": 0, "inspected": 0, "skipped": 0, "failed": 0}
+    print_header("info" if args.info else "convert", args, input_count=len(inputs))
+    for index, path in enumerate(inputs, start=1):
+        line("")
+        rule(f"File {index}/{len(inputs)}: {os.path.basename(path)}")
+        status = process_file(
+            path,
+            args.output if not os.path.isdir(args.input) else None,
+            args,
+            ffmpeg,
+            ffprobe,
+        )
         results[status] += 1
+        if len(inputs) > 1:
+            print_batch_progress(results, len(inputs), args.info)
 
-    print("")
-    print("Summary:")
-    print(f"  Converted: {results['converted']}")
-    print(f"  Skipped:   {results['skipped']}")
-    print(f"  Failed:    {results['failed']}")
+    line("")
+    print_summary(results, args.info, time.time() - total_started)
+
+    if results["failed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
